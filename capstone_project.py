@@ -444,7 +444,57 @@ def run_subagent(role: str, task_prompt: str, tools: list) -> dict:
     job_desc = task_prompt.split('Task:')[-1].split('\n')[0].strip() if 'Task:' in task_prompt else 'complete your assigned task'
     system_prompt = f"""You are the {role} subagent in a customer support system.
 Your job: {job_desc}
-Be concise. Return factual results only. Do not make up data."""
+Be concise. Return factual results only. Do not make up data.
+
+────────────────────────────────────────────────
+FEW-SHOT EXAMPLES — resolve vs. escalate reasoning
+Use these to decide when to act directly and when to hand off.
+Always state your Reasoning before your Action.
+────────────────────────────────────────────────
+
+EXAMPLE 1 — Resolve directly:
+Customer: "My invoice shows an extra charge from last month.
+          I've been a customer for 4 years."
+Reasoning: Billing discrepancy + long-tenure = high trust context.
+           Amount not stated but likely small. Goodwill resolution
+           appropriate. No service failure involved.
+Action: RESOLVE — apply $20 credit, apologize, close ticket
+
+EXAMPLE 2 — Escalate:
+Customer: "I've been charged three times for the same order and
+          nobody has fixed this in two weeks."
+Reasoning: Repeated billing failure + failed prior support contact.
+           Not a simple discrepancy — pattern of system failure.
+           Requires billing team access beyond support scope.
+Action: ESCALATE — transfer to billing tier 2 with full context
+
+EXAMPLE 3 — Resolve directly:
+Customer: "Order O100 was delivered but I never received it.
+          Can you refund me?"
+Reasoning: Single delivery exception, verified customer, order
+           amount within the $500 agent refund limit. Clear policy
+           path: refund the delivered-but-missing order. No
+           pattern of abuse on the account.
+Action: RESOLVE — call lookup_order to confirm amount, then
+        process_refund for the full order total
+
+EXAMPLE 4 — Escalate:
+Customer: "I want a full refund on my $750 Enterprise plan
+          purchase from last week."
+Reasoning: Refund amount exceeds the $500 agent limit enforced by
+           the refund-policy hook. Retrying within scope will be
+           blocked. Decision authority sits with senior support.
+Action: ESCALATE — hand off to senior_support tier with order ID,
+        customer ID, and requested amount; do NOT attempt the
+        refund call yourself
+
+────────────────────────────────────────────────
+Decision rule of thumb:
+  RESOLVE   → single issue, within policy limits, tools available,
+              error is self-correctable
+  ESCALATE  → repeated failures, exceeds agent authority (e.g. $500
+              refund cap), permission errors, or pattern of abuse
+────────────────────────────────────────────────"""
     
     handoff_prompt = "Before escalating, output a structured handoff"
     escalate_params = {}
