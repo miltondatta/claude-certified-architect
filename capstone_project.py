@@ -1,12 +1,14 @@
 """
-multi_agent_demo.py
-====================
-Claude Certified Architect — Episodes 01 to 05 Connector Demo
+capstone_project.py
+===================
+Claude Certified Architect — Capstone: a multi-agent customer support system.
 
 What this covers (exam-relevant):
   Ep 01 → Agentic loop: stop_reason, tool_use, messages array
   Ep 02 → Coordinator pattern: task decomposition, subagent invocation
   Ep 03 → Structured context passing: findings as objects, not prose
+  Escalation → when to hand off to a human: explicit customer request,
+               requests beyond agent authority, or repeated failures
 
 Cost: ~5–10 API calls total, all using claude-haiku-4-5
       Expect < $0.01 USD to run the whole demo.
@@ -14,7 +16,7 @@ Cost: ~5–10 API calls total, all using claude-haiku-4-5
 Setup:
   pip install anthropic
   export ANTHROPIC_API_KEY="sk-ant-..."
-  python multi_agent_demo.py
+  python capstone_project.py
 """
 
 import anthropic
@@ -86,11 +88,39 @@ def process_refund(order_id: str, amount: float) -> dict:
         return {"success": False, "error": "Order already refunded"}
     return {"success": True, "refund_id": f"REF-{order_id}", "amount": amount}
 
+def escalate_to_human(reason: str, customer_id: str = None) -> dict:
+    """Hand the conversation off to a human support agent.
+
+    There is no real human agent in this demo, so this simulates the handoff:
+    it prints a clear banner and returns a structured handoff record. In
+    production this would open a ticket or page the on-call support queue.
+
+    Note: this tool is intentionally NOT behind the verification gate — when a
+    customer explicitly asks for a human, we escalate immediately rather than
+    forcing them to verify their identity first.
+    """
+    cid = customer_id or session.get("customer_id")
+    ticket_id = f"ESC-{cid or 'GUEST'}-{datetime.now().strftime('%H%M%S')}"
+    print("\n  " + "═" * 48)
+    print("  🧑‍💼  ESCALATED TO A HUMAN AGENT")
+    print(f"  Ticket:   {ticket_id}")
+    print(f"  Customer: {cid or 'not provided'}")
+    print(f"  Reason:   {reason}")
+    print("  " + "═" * 48)
+    return {
+        "escalated":   True,
+        "ticket_id":   ticket_id,
+        "customer_id": cid,
+        "reason":      reason,
+        "message":     "Connected to a human agent. A specialist will take over from here.",
+    }
+
 # Map tool names → functions
 TOOL_REGISTRY = {
-    "get_customer":  get_customer,
-    "lookup_order":  lookup_order,
-    "process_refund": process_refund,
+    "get_customer":      get_customer,
+    "lookup_order":      lookup_order,
+    "process_refund":    process_refund,
+    "escalate_to_human": escalate_to_human,
 }
 
 # ─────────────────────────────────────────────
@@ -269,6 +299,32 @@ TOOLS = [
                 }
             },
             "required": ["order_id", "amount"]
+        }
+    },
+    {
+        "name": "escalate_to_human",
+        "description": (
+            "Hand the conversation off to a human support agent. "
+            "Call this IMMEDIATELY when the customer explicitly asks to speak "
+            "to a human, a manager, or a real person — do NOT insist on "
+            "verifying identity or resolving the issue yourself first. "
+            "Also call this when a request exceeds your authority (e.g. a "
+            "refund above the $500 agent limit) or after repeated failures. "
+            "Returns a confirmation that the handoff was created."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for the handoff (e.g. 'customer explicitly requested a human agent')",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Customer ID if known (optional — not required to escalate)",
+                }
+            },
+            "required": ["reason"]
         }
     }
 ]
@@ -484,21 +540,31 @@ Customer: "I want a full refund on my $750 Enterprise plan
 Reasoning: Refund amount exceeds the $500 agent limit enforced by
            the refund-policy hook. Retrying within scope will be
            blocked. Decision authority sits with senior support.
-Action: ESCALATE — hand off to senior_support tier with order ID,
+Action: ESCALATE — call escalate_to_human with the order ID,
         customer ID, and requested amount; do NOT attempt the
         refund call yourself
+
+EXAMPLE 5 — Escalate (customer explicitly asks):
+Customer: "I don't want to deal with a bot. Connect me to a
+          real human agent."
+Reasoning: The customer has explicitly requested a human. An explicit
+           request is its own escalation trigger — it overrides the
+           normal resolve-first path. Do not insist on verification or
+           troubleshooting; honor the request right away.
+Action: ESCALATE — call escalate_to_human with reason
+        "customer explicitly requested a human agent"
 
 ────────────────────────────────────────────────
 Decision rule of thumb:
   RESOLVE   → single issue, within policy limits, tools available,
               error is self-correctable
-  ESCALATE  → repeated failures, exceeds agent authority (e.g. $500
-              refund cap), permission errors, or pattern of abuse
+  ESCALATE  → customer explicitly asks for a human, repeated failures,
+              exceeds agent authority (e.g. $500 refund cap),
+              permission errors, or pattern of abuse
+  HOW       → to escalate, CALL the escalate_to_human tool — don't just
+              describe the handoff in prose
 ────────────────────────────────────────────────"""
     
-    handoff_prompt = "Before escalating, output a structured handoff"
-    escalate_params = {}
-
     result_text = run_agentic_loop(system_prompt, task_prompt, tools)
 
     # Ep 03: wrap result as a structured finding object (not raw prose)
@@ -585,25 +651,45 @@ Refund:       {refund_finding['result']}
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║  Claude Certified Architect — Episodes 01-03 Demo            ║
-║  Ep01: Agentic loop  |  Ep02: Coordinator  |  Ep03: Context  ║
-╚══════════════════════════════════════════════════════════════╝
+    print("=" * 64)
+    print("  Claude Certified Architect — Capstone Project")
+    print("  Multi-agent customer support: resolve vs. escalate")
+    print("=" * 64)
 
-Scenario: Customer C001 wants a refund for order O100.
-The coordinator will:
+    # ── Scenario 1: the coordinator works a refund case ──
+    # Verify the customer, pass the finding forward, then attempt the refund.
+    # (C001 + O102 is the $750 order — it trips the PreToolUse refund-policy
+    #  BLOCK, our first escalation trigger: a request beyond agent authority.)
+    print("""
+SCENARIO 1 — Coordinated refund
   1. Spawn a Customer Verifier subagent  (Ep02: decomposition)
-  2. Pass its structured finding forward  (Ep03: context passing)
+  2. Pass its structured finding forward (Ep03: context passing)
   3. Spawn a Refund Processor subagent   (Ep02: delegation)
   4. Aggregate the results               (Ep02: aggregation)
-
 Each subagent runs its own agentic loop  (Ep01: stop_reason)
 """)
-
     coordinator(customer_id="C001", order_id="O102")
 
-    print("\n" + "─"*60)
-    print("Try changing customer_id to 'C999' to see error handling.")
-    print("Try order_id to 'O101' to see 'already refunded' case.")
-    print("Try order_id to 'O102' (with C001) to see the PreToolUse BLOCK.")
+    # ── Scenario 2: the customer explicitly asks for a human ──
+    # An explicit request is its own escalation trigger. The agent has the
+    # full toolset, but it should CHOOSE escalate_to_human over trying to
+    # resolve the issue itself.
+    print("\n\nSCENARIO 2 — Customer explicitly asks for a human\n")
+    escalation_message = (
+        "Task: Handle this customer message and decide whether to resolve "
+        "or escalate.\n\n"
+        'Customer: "I don\'t want to deal with a bot. '
+        'Connect me to a real human agent."'
+    )
+    run_subagent(
+        role="Support Agent",
+        task_prompt=escalation_message,
+        tools=TOOLS,   # full toolset — the agent must CHOOSE to escalate
+    )
+
+    print("\n" + "─" * 64)
+    print("Try it yourself:")
+    print("  • Scenario 1: order_id 'O101'  → 'already refunded' case")
+    print("  • Scenario 1: customer 'C999'  → verification fails")
+    print("  • Scenario 1: order_id 'O100'  → small refund, resolves cleanly")
+    print("  • Scenario 2: swap in a normal question → agent resolves, no escalation")
